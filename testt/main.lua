@@ -1,14 +1,16 @@
 --[[
     ===================================================================
-    🎣 ADVANCED AUTO FISHING HUB (LUA / LUAU)
+    🎣 ADVANCED AUTO FISHING HUB (LUA / LUAU) - FULL LOCAL EDITION
     ===================================================================
     Features:
       • Modern Dark-Themed UI with Navbar & Smooth Animations
-      • Tabs: [Auto Fishing] | [Sell] | [Settings & Misc]
+      • Tabs: [Auto Fishing] | [Sell] | [Rods / Shop] | [Settings & Misc]
       • Sliders: Speed Slider (Cast Delay, Reel Speed, Shake Delay)
       • Toggles: Auto Cast, Auto Shake / Reel, Auto Catch / Perfect Reel
-      • Auto Sell: Merchant proximity / Sell all fish
+      • Auto Sell: Merchant proximity / Sell all fish (Simulated Locally)
       • Universal & Fisch Compatibility: Works with standard Rod tools & Fisch minigames
+      • 100% Client-Side / Full Local: Zero server impact (No network packet replication)
+      • Metamethod Hook Protection: Blocks FireServer & InvokeServer via hookmetamethod
       • Standalone: Zero external asset dependencies (Runs on any executor: Solara, Delta, Codex, Arceus, Wave, etc.)
     ===================================================================
 --]]
@@ -33,12 +35,119 @@ local getGuiParent = function()
     return (success and parent) or LocalPlayer:WaitForChild("PlayerGui")
 end
 
+-- ===================================================================
+-- FULL LOCAL & METAMETHOD HOOK PROTECTION (ZERO SERVER IMPACT)
+-- ===================================================================
+-- Intercepts __namecall and index calls so FireServer & InvokeServer calls
+-- are completely blocked from reaching the server, keeping all actions purely local.
+local LocalEnv = {
+    FullLocalMode = true,
+    BlockedCalls = 0,
+    TotalSimulatedActions = 0,
+}
+
+local closureWrapper = function(f)
+    if typeof(newcclosure) == "function" then
+        return newcclosure(f)
+    end
+    return f
+end
+
+-- 1. Metamethod Hook (__namecall)
+if typeof(hookmetamethod) == "function" then
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", closureWrapper(function(self, ...)
+        local method = (typeof(getnamecallmethod) == "function" and getnamecallmethod()) or ""
+        if LocalEnv.FullLocalMode and (method == "FireServer" or method == "InvokeServer") then
+            LocalEnv.BlockedCalls = LocalEnv.BlockedCalls + 1
+            print(string.format("[FULL LOCAL METAMETHOD] Blocked %s:%s() -> Server unaffected.", tostring(self), method))
+            if method == "InvokeServer" then
+                return true
+            end
+            return nil
+        end
+        return oldNamecall(self, ...)
+    end))
+    print("[FULL LOCAL] hookmetamethod (__namecall) protection activated!")
+end
+
+-- 2. Function Hook (hookfunction) if supported
+if typeof(hookfunction) == "function" then
+    pcall(function()
+        local dummyEvent = Instance.new("RemoteEvent")
+        local dummyFunction = Instance.new("RemoteFunction")
+        
+        local oldFire = dummyEvent.FireServer
+        hookfunction(oldFire, closureWrapper(function(self, ...)
+            if LocalEnv.FullLocalMode then
+                LocalEnv.BlockedCalls = LocalEnv.BlockedCalls + 1
+                print(string.format("[FULL LOCAL HOOKFUNCTION] Blocked FireServer on %s", tostring(self)))
+                return nil
+            end
+            return oldFire(self, ...)
+        end))
+        
+        local oldInvoke = dummyFunction.InvokeServer
+        hookfunction(oldInvoke, closureWrapper(function(self, ...)
+            if LocalEnv.FullLocalMode then
+                LocalEnv.BlockedCalls = LocalEnv.BlockedCalls + 1
+                print(string.format("[FULL LOCAL HOOKFUNCTION] Blocked InvokeServer on %s", tostring(self)))
+                return true
+            end
+            return oldInvoke(self, ...)
+        end))
+        
+        dummyEvent:Destroy()
+        dummyFunction:Destroy()
+        print("[FULL LOCAL] hookfunction (FireServer / InvokeServer) protection activated!")
+    end)
+end
+
+-- 3. Dedicated Safe Client Dispatchers (Guarantees zero server impact)
+local function safeFireServer(remote, ...)
+    if LocalEnv.FullLocalMode then
+        LocalEnv.BlockedCalls = LocalEnv.BlockedCalls + 1
+        LocalEnv.TotalSimulatedActions = LocalEnv.TotalSimulatedActions + 1
+        print(string.format("[FULL LOCAL] Simulated FireServer on '%s' (Zero Server Impact)", tostring(remote)))
+        return
+    end
+    if remote and remote:IsA("RemoteEvent") then
+        remote:FireServer(...)
+    end
+end
+
+local function safeInvokeServer(remote, ...)
+    if LocalEnv.FullLocalMode then
+        LocalEnv.BlockedCalls = LocalEnv.BlockedCalls + 1
+        LocalEnv.TotalSimulatedActions = LocalEnv.TotalSimulatedActions + 1
+        print(string.format("[FULL LOCAL] Simulated InvokeServer on '%s' (Zero Server Impact)", tostring(remote)))
+        return true
+    end
+    if remote and remote:IsA("RemoteFunction") then
+        return remote:InvokeServer(...)
+    end
+    return true
+end
+
+local function safeFireProximityPrompt(prompt)
+    if LocalEnv.FullLocalMode then
+        LocalEnv.BlockedCalls = LocalEnv.BlockedCalls + 1
+        LocalEnv.TotalSimulatedActions = LocalEnv.TotalSimulatedActions + 1
+        print(string.format("[FULL LOCAL] Simulated ProximityPrompt '%s' (Zero Server Impact)", prompt.ActionText or prompt.ObjectText or tostring(prompt)))
+        return
+    end
+    if fireproximityprompt then
+        fireproximityprompt(prompt)
+    end
+end
+
 -- ==========================================
 -- CONFIG & SETTINGS REGISTRY (AUTO-SAVE)
 -- ==========================================
 local ConfigFileName = "FishOn_SettingsRegistry.json"
 
 local DefaultConfig = {
+    FullLocalMode = true,
     AutoCast = false,
     AutoShake = false,
     AutoReel = false,
@@ -103,12 +212,16 @@ function Registry:Reset()
     for k, v in pairs(DefaultConfig) do
         Config[k] = v
     end
+    LocalEnv.FullLocalMode = Config.FullLocalMode ~= false
     Registry:Save()
     print("[REGISTRY] Configuration reset to default.")
 end
 
 function Registry:Set(key, value)
     Config[key] = value
+    if key == "FullLocalMode" then
+        LocalEnv.FullLocalMode = (value ~= false)
+    end
     if Registry.AutoSave then
         Registry:Save()
     end
@@ -116,6 +229,7 @@ end
 
 -- Load existing settings from disk on initialization
 Registry:Load()
+LocalEnv.FullLocalMode = (Config.FullLocalMode ~= false)
 
 -- Cleanup existing instance if re-executed
 if getGuiParent():FindFirstChild("AutoFishingHub_UI") then
@@ -172,10 +286,10 @@ TopBarCover.Parent = TopBar
 
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Name = "TitleLabel"
-TitleLabel.Size = UDim2.new(0, 300, 1, 0)
+TitleLabel.Size = UDim2.new(0, 340, 1, 0)
 TitleLabel.Position = UDim2.new(0, 15, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "🎣 FISHING HUB <font color=\"#4F8FFF\">V2.0</font>"
+TitleLabel.Text = "🎣 FISHING HUB <font color=\"#00FFAA\">[LOCAL]</font> <font color=\"#4F8FFF\">V2.0</font>"
 TitleLabel.RichText = true
 TitleLabel.TextColor3 = Color3.fromRGB(240, 240, 245)
 TitleLabel.Font = Enum.Font.GothamBold
@@ -563,21 +677,27 @@ AddSlider(SellTab, "Auto Sell Interval", 5, 60, Config.SellInterval, "s", functi
 end)
 
 AddButton(SellTab, "Sell All Fish Now", "Sell ➔", function()
-    -- Fire Sell logic immediately
+    -- Fire Sell logic (Safely routed through local simulator)
     task.spawn(function()
         pcall(function()
+            if LocalEnv.FullLocalMode then
+                safeFireServer("SimulatedSellAll")
+                print("[FULL LOCAL] Sell All Fish executed locally (Zero server impact)")
+                return
+            end
+
             local sellRemote = ReplicatedStorage:FindFirstChild("events") and ReplicatedStorage.events:FindFirstChild("sellall")
                 or ReplicatedStorage:FindFirstChild("SellAll") 
                 or ReplicatedStorage:FindFirstChild("Sell")
                 
             if sellRemote and sellRemote:IsA("RemoteFunction") then
-                sellRemote:InvokeServer()
+                safeInvokeServer(sellRemote)
             elseif sellRemote and sellRemote:IsA("RemoteEvent") then
-                sellRemote:FireServer()
+                safeFireServer(sellRemote)
             else
                 for _, prompt in ipairs(workspace:GetDescendants()) do
                     if prompt:IsA("ProximityPrompt") and (string.find(string.lower(prompt.ActionText), "sell") or string.find(string.lower(prompt.ObjectText), "merchant")) then
-                        fireproximityprompt(prompt)
+                        safeFireProximityPrompt(prompt)
                     end
                 end
             end
@@ -654,6 +774,12 @@ end)
 
 AddButton(RodsTab, "Buy Current Nearby Rod", "Buy ➔", function()
     pcall(function()
+        if LocalEnv.FullLocalMode then
+            safeFireServer("SimulatedBuyRod")
+            print("[FULL LOCAL] Buy Rod executed locally (Zero server impact)")
+            return
+        end
+
         local char = LocalPlayer.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
         if not hrp then return end
@@ -662,7 +788,7 @@ AddButton(RodsTab, "Buy Current Nearby Rod", "Buy ➔", function()
             if prompt:IsA("ProximityPrompt") and (string.find(string.lower(prompt.ActionText), "rod") or string.find(string.lower(prompt.ObjectText), "rod") or string.find(string.lower(prompt.ActionText), "buy")) then
                 local part = prompt.Parent:IsA("BasePart") and prompt.Parent or prompt.Parent:FindFirstChildWhichIsA("BasePart")
                 if part and (hrp.Position - part.Position).Magnitude <= (prompt.MaxActivationDistance + 5) then
-                    fireproximityprompt(prompt)
+                    safeFireProximityPrompt(prompt)
                 end
             end
         end
@@ -671,9 +797,9 @@ AddButton(RodsTab, "Buy Current Nearby Rod", "Buy ➔", function()
             or ReplicatedStorage:FindFirstChild("BuyRod")
             
         if buyRemote and buyRemote:IsA("RemoteFunction") then
-            buyRemote:InvokeServer()
+            safeInvokeServer(buyRemote)
         elseif buyRemote and buyRemote:IsA("RemoteEvent") then
-            buyRemote:FireServer()
+            safeFireServer(buyRemote)
         end
     end)
 end)
@@ -693,6 +819,20 @@ AddButton(RodsTab, "Equip Best Rod from Backpack", "Equip ➔", function()
 end)
 
 -- 4. Settings / Misc Tab (Config Registry & System)
+AddToggle(MiscTab, "Full Local Mode (Zero Server Impact)", Config.FullLocalMode, function(val)
+    Registry:Set("FullLocalMode", val)
+    LocalEnv.FullLocalMode = (val ~= false)
+    print("[FULL LOCAL] Mode switched: " .. (val and "ACTIVE (Zero Server Impact)" or "OFF (Direct Server)"))
+end)
+
+AddButton(MiscTab, "View Blocked Server Calls", "Check 🛡️", function()
+    print(string.format("[FULL LOCAL STATUS] Total Blocked Server Calls: %d | Simulated Actions: %d | Local Mode: %s",
+        LocalEnv.BlockedCalls,
+        LocalEnv.TotalSimulatedActions,
+        LocalEnv.FullLocalMode and "ENABLED" or "DISABLED"
+    ))
+end)
+
 AddToggle(MiscTab, "Auto-Save Settings Registry", Registry.AutoSave, function(val)
     Registry.AutoSave = val
     Registry:Save()
@@ -769,17 +909,24 @@ task.spawn(function()
             pcall(function()
                 local rod = getEquippedRod()
                 if rod then
-                    -- Fisch specific remote or general Tool activation
-                    local eventsFolder = rod:FindFirstChild("events") or ReplicatedStorage:FindFirstChild("events")
-                    local castEvent = eventsFolder and (eventsFolder:FindFirstChild("cast") or eventsFolder:FindFirstChild("Cast"))
-                    
-                    if castEvent and castEvent:IsA("RemoteEvent") then
-                        castEvent:FireServer(Config.CastPower)
-                    elseif castEvent and castEvent:IsA("RemoteFunction") then
-                        castEvent:InvokeServer(Config.CastPower)
-                    else
-                        -- Fallback: Universal tool activation
+                    if LocalEnv.FullLocalMode then
+                        -- Pure local cast simulation: animate/activate tool locally without sending network packets to server
                         rod:Activate()
+                        LocalEnv.TotalSimulatedActions = LocalEnv.TotalSimulatedActions + 1
+                        print(string.format("[FULL LOCAL] Cast simulated locally (Power: %d%% | Zero Server Impact)", Config.CastPower))
+                    else
+                        -- Fisch specific remote or general Tool activation
+                        local eventsFolder = rod:FindFirstChild("events") or ReplicatedStorage:FindFirstChild("events")
+                        local castEvent = eventsFolder and (eventsFolder:FindFirstChild("cast") or eventsFolder:FindFirstChild("Cast"))
+                        
+                        if castEvent and castEvent:IsA("RemoteEvent") then
+                            safeFireServer(castEvent, Config.CastPower)
+                        elseif castEvent and castEvent:IsA("RemoteFunction") then
+                            safeInvokeServer(castEvent, Config.CastPower)
+                        else
+                            -- Fallback: Universal tool activation
+                            rod:Activate()
+                        end
                     end
                 end
             end)
@@ -800,7 +947,7 @@ task.spawn(function()
                     for _, obj in ipairs(safezone:GetDescendants()) do
                         if obj:IsA("ImageButton") or obj:IsA("TextButton") then
                             if obj.Visible then
-                                -- Click button or simulate click
+                                -- Click button locally via VirtualInputManager
                                 local pos = obj.AbsolutePosition + (obj.AbsoluteSize / 2)
                                 VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, true, game, 1)
                                 task.wait(0.01)
@@ -822,15 +969,25 @@ task.spawn(function()
             pcall(function()
                 local reelUI = PlayerGui:FindFirstChild("reel") or PlayerGui:FindFirstChild("Reel")
                 if reelUI and reelUI.Enabled then
-                    -- Check if instant win event exists
-                    local eventsFolder = ReplicatedStorage:FindFirstChild("events")
-                    local reelFinished = eventsFolder and (eventsFolder:FindFirstChild("reelfinished") or eventsFolder:FindFirstChild("ReelFinished"))
-                    
-                    if Config.InstantCatch and reelFinished then
-                        reelFinished:FireServer(100, true)
-                        task.wait(0.5)
+                    if Config.InstantCatch then
+                        if LocalEnv.FullLocalMode then
+                            -- Complete Reel minigame locally on UI without sending exploit remotes to server
+                            local eventsFolder = ReplicatedStorage:FindFirstChild("events")
+                            local reelFinished = eventsFolder and (eventsFolder:FindFirstChild("reelfinished") or eventsFolder:FindFirstChild("ReelFinished"))
+                            safeFireServer(reelFinished, 100, true)
+                            reelUI.Enabled = false
+                            print("[FULL LOCAL] Minigame Reel completed locally (Zero Server Impact)")
+                            task.wait(0.5)
+                        else
+                            local eventsFolder = ReplicatedStorage:FindFirstChild("events")
+                            local reelFinished = eventsFolder and (eventsFolder:FindFirstChild("reelfinished") or eventsFolder:FindFirstChild("ReelFinished"))
+                            if reelFinished then
+                                safeFireServer(reelFinished, 100, true)
+                                task.wait(0.5)
+                            end
+                        end
                     else
-                        -- Minigame Bar Follower logic
+                        -- Minigame Bar Follower logic (local input via VirtualInputManager)
                         local bar = reelUI:FindFirstChild("bar", true)
                         local fish = reelUI:FindFirstChild("fish", true) or reelUI:FindFirstChild("target", true)
                         
@@ -858,14 +1015,20 @@ task.spawn(function()
         task.wait(Config.SellInterval)
         if Config.AutoSell then
             pcall(function()
+                if LocalEnv.FullLocalMode then
+                    safeFireServer("SimulatedAutoSell")
+                    print("[FULL LOCAL] Auto Sell executed locally (Zero server impact)")
+                    return
+                end
+
                 local sellRemote = ReplicatedStorage:FindFirstChild("events") and ReplicatedStorage.events:FindFirstChild("sellall")
                     or ReplicatedStorage:FindFirstChild("SellAll") 
                     or ReplicatedStorage:FindFirstChild("Sell")
                     
                 if sellRemote and sellRemote:IsA("RemoteFunction") then
-                    sellRemote:InvokeServer()
+                    safeInvokeServer(sellRemote)
                 elseif sellRemote and sellRemote:IsA("RemoteEvent") then
-                    sellRemote:FireServer()
+                    safeFireServer(sellRemote)
                 end
             end)
         end
@@ -878,6 +1041,12 @@ task.spawn(function()
         task.wait(Config.BuyRodInterval)
         if Config.AutoBuyRod then
             pcall(function()
+                if LocalEnv.FullLocalMode then
+                    safeFireServer("SimulatedAutoBuyRod")
+                    print("[FULL LOCAL] Auto Buy Rod executed locally (Zero server impact)")
+                    return
+                end
+
                 local char = LocalPlayer.Character
                 local hrp = char and char:FindFirstChild("HumanoidRootPart")
                 if hrp then
@@ -885,7 +1054,7 @@ task.spawn(function()
                         if prompt:IsA("ProximityPrompt") and (string.find(string.lower(prompt.ActionText), "rod") or string.find(string.lower(prompt.ObjectText), "rod") or string.find(string.lower(prompt.ActionText), "buy")) then
                             local part = prompt.Parent:IsA("BasePart") and prompt.Parent or prompt.Parent:FindFirstChildWhichIsA("BasePart")
                             if part and (hrp.Position - part.Position).Magnitude <= (prompt.MaxActivationDistance + 5) then
-                                fireproximityprompt(prompt)
+                                safeFireProximityPrompt(prompt)
                             end
                         end
                     end
@@ -895,9 +1064,9 @@ task.spawn(function()
                     or ReplicatedStorage:FindFirstChild("BuyRod")
                     
                 if buyRemote and buyRemote:IsA("RemoteFunction") then
-                    buyRemote:InvokeServer()
+                    safeInvokeServer(buyRemote)
                 elseif buyRemote and buyRemote:IsA("RemoteEvent") then
-                    buyRemote:FireServer()
+                    safeFireServer(buyRemote)
                 end
             end)
         end
@@ -913,4 +1082,4 @@ LocalPlayer.Idled:Connect(function()
     end)
 end)
 
-print("[FISHING HUB] Loaded successfully with pcall protections! Enjoy auto fishing.")
+print("[FISHING HUB] Loaded successfully in FULL LOCAL MODE with hookmetamethod protections! (Zero server impact)")
