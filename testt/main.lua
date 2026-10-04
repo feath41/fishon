@@ -149,6 +149,7 @@ local ConfigFileName = "FishOn_SettingsRegistry.json"
 local DefaultConfig = {
     FullLocalMode = true,
     AutoCast = false,
+    AutoUseRod = false,
     AutoShake = false,
     AutoReel = false,
     InstantCatch = false,
@@ -156,6 +157,7 @@ local DefaultConfig = {
     AutoBuyRod = false,
     
     CastDelay = 1.2,        -- seconds between casts
+    UseRodInterval = 0.5,   -- seconds between auto use rod triggers
     ShakeDelay = 0.08,      -- delay per shake button click
     ReelSpeed = 1.0,        -- multiplier / speed
     SellInterval = 15,      -- check sell every N seconds
@@ -286,7 +288,7 @@ TopBarCover.Parent = TopBar
 
 local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Name = "TitleLabel"
-TitleLabel.Size = UDim2.new(0, 340, 1, 0)
+TitleLabel.Size = UDim2.new(0, 300, 1, 0)
 TitleLabel.Position = UDim2.new(0, 15, 0, 0)
 TitleLabel.BackgroundTransparency = 1
 TitleLabel.Text = "🎣 FISHING HUB <font color=\"#00FFAA\">[LOCAL]</font> <font color=\"#4F8FFF\">V2.0</font>"
@@ -296,6 +298,77 @@ TitleLabel.Font = Enum.Font.GothamBold
 TitleLabel.TextSize = 15
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Parent = TopBar
+
+-- ==========================================
+-- MINIMIZED FLOATING SQUARE (KOTAK MINIMIZE)
+-- ==========================================
+local MinSquare = Instance.new("Frame")
+MinSquare.Name = "MinSquare"
+MinSquare.Size = UDim2.new(0, 48, 0, 48)
+MinSquare.Position = UDim2.new(0.05, 0, 0.4, 0)
+MinSquare.BackgroundColor3 = Color3.fromRGB(20, 24, 32)
+MinSquare.BorderSizePixel = 0
+MinSquare.Visible = false
+MinSquare.ClipsDescendants = true
+MinSquare.Parent = ScreenGui
+
+local MinSquareCorner = Instance.new("UICorner")
+MinSquareCorner.CornerRadius = UDim.new(0, 12)
+MinSquareCorner.Parent = MinSquare
+
+local MinSquareStroke = Instance.new("UIStroke")
+MinSquareStroke.Thickness = 1.6
+MinSquareStroke.Color = Color3.fromRGB(60, 140, 255)
+MinSquareStroke.Parent = MinSquare
+
+local MinSquareBtn = Instance.new("TextButton")
+MinSquareBtn.Name = "MinSquareBtn"
+MinSquareBtn.Size = UDim2.new(1, 0, 1, 0)
+MinSquareBtn.BackgroundTransparency = 1
+MinSquareBtn.Text = "🎣"
+MinSquareBtn.TextSize = 22
+MinSquareBtn.Parent = MinSquare
+
+-- Draggable Logic for MinSquare
+local minDragging, minDragInput, minDragStart, minStartPos
+local minHasMoved = false
+
+MinSquareBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        minDragging = true
+        minHasMoved = false
+        minDragStart = input.Position
+        minStartPos = MinSquare.Position
+        input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                minDragging = false
+            end
+        end)
+    end
+end)
+
+MinSquareBtn.InputChanged:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+        minDragInput = input
+    end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+    if input == minDragInput and minDragging then
+        local delta = input.Position - minDragStart
+        if delta.Magnitude > 4 then
+            minHasMoved = true
+        end
+        MinSquare.Position = UDim2.new(minStartPos.X.Scale, minStartPos.X.Offset + delta.X, minStartPos.Y.Scale, minStartPos.Y.Offset + delta.Y)
+    end
+end)
+
+MinSquareBtn.MouseButton1Click:Connect(function()
+    if not minHasMoved then
+        MinSquare.Visible = false
+        MainFrame.Visible = true
+    end
+end)
 
 -- Close & Minimize Buttons
 local CloseBtn = Instance.new("TextButton")
@@ -316,6 +389,28 @@ CloseBtnCorner.Parent = CloseBtn
 
 CloseBtn.MouseButton1Click:Connect(function()
     ScreenGui:Destroy()
+end)
+
+local MinimizeBtn = Instance.new("TextButton")
+MinimizeBtn.Name = "MinimizeBtn"
+MinimizeBtn.Size = UDim2.new(0, 30, 0, 30)
+MinimizeBtn.Position = UDim2.new(1, -72, 0.5, -15)
+MinimizeBtn.BackgroundColor3 = Color3.fromRGB(35, 42, 58)
+MinimizeBtn.BackgroundTransparency = 0.5
+MinimizeBtn.Text = "▫"
+MinimizeBtn.TextColor3 = Color3.fromRGB(180, 195, 230)
+MinimizeBtn.Font = Enum.Font.GothamBold
+MinimizeBtn.TextSize = 16
+MinimizeBtn.Parent = TopBar
+
+local MinimizeBtnCorner = Instance.new("UICorner")
+MinimizeBtnCorner.CornerRadius = UDim.new(0, 6)
+MinimizeBtnCorner.Parent = MinimizeBtn
+
+MinimizeBtn.MouseButton1Click:Connect(function()
+    MainFrame.Visible = false
+    MinSquare.Position = UDim2.new(MainFrame.Position.X.Scale, MainFrame.Position.X.Offset + 236, MainFrame.Position.Y.Scale, MainFrame.Position.Y.Offset)
+    MinSquare.Visible = true
 end)
 
 -- Dragging Logic
@@ -646,6 +741,10 @@ AddToggle(FishingTab, "Auto Cast Rod", Config.AutoCast, function(val)
     Registry:Set("AutoCast", val)
 end)
 
+AddToggle(FishingTab, "Auto Use Rod (Equip & Hold)", Config.AutoUseRod, function(val)
+    Registry:Set("AutoUseRod", val)
+end)
+
 AddToggle(FishingTab, "Auto Shake / Reel", Config.AutoShake, function(val)
     Registry:Set("AutoShake", val)
     Registry:Set("AutoReel", val)
@@ -657,6 +756,10 @@ end)
 
 AddSlider(FishingTab, "Cast Delay (Cooldown)", 0.2, 5.0, Config.CastDelay, "s", function(val)
     Registry:Set("CastDelay", val)
+end)
+
+AddSlider(FishingTab, "Use Rod Interval", 0.1, 2.0, Config.UseRodInterval, "s", function(val)
+    Registry:Set("UseRodInterval", val)
 end)
 
 AddSlider(FishingTab, "Shake / Reel Speed", 0.02, 0.5, Config.ShakeDelay, "s", function(val)
@@ -928,6 +1031,22 @@ task.spawn(function()
                             rod:Activate()
                         end
                     end
+                end
+            end)
+        end
+    end
+end)
+
+-- 1.5 AUTO USE / EQUIP ROD LOOP
+task.spawn(function()
+    while true do
+        task.wait(Config.UseRodInterval or 0.5)
+        if Config.AutoUseRod then
+            pcall(function()
+                local rod = getEquippedRod()
+                if rod then
+                    rod:Activate()
+                    LocalEnv.TotalSimulatedActions = LocalEnv.TotalSimulatedActions + 1
                 end
             end)
         end
